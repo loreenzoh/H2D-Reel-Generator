@@ -12,11 +12,12 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from app.services.h2d_hedra import generate_talking_avatar
 from app.services.h2d_reel import render_reel
 
 
 st.set_page_config(
-    page_title="H2D Reel Generator V2",
+    page_title="H2D Reel Generator V3",
     page_icon="🎬",
     layout="wide",
 )
@@ -103,12 +104,22 @@ def save_upload(upload, folder: Path, prefix: str) -> str | None:
     return str(destination)
 
 
+def get_hedra_key() -> str:
+    key = os.getenv("HEDRA_API_KEY", "").strip()
+    if key:
+        return key
+    try:
+        return str(st.secrets.get("HEDRA_API_KEY", "")).strip()
+    except Exception:
+        return ""
+
+
 st.markdown(
     """
     <div class="h2d-hero">
-      <div class="h2d-kicker">H2D STUDIO · REELS · V2</div>
+      <div class="h2d-kicker">H2D STUDIO · REELS · V3</div>
       <div class="h2d-title">Generador de Reels H2D Premium</div>
-      <p class="h2d-copy">Crea un anuncio 9:16 con escenas H2D, tutor, capturas reales, voz española, beneficios y CTA final.</p>
+      <p class="h2d-copy">Monta el Reel H2D y prueba el tutor hablando con Hedra antes de integrarlo en el anuncio final.</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -144,7 +155,7 @@ with left:
         f"Imagen de {tutor}",
         type=["png", "jpg", "jpeg", "webp"],
         key=f"tutor_image_{tutor}",
-        help="La V2 integra al tutor como protagonista dentro de una composición H2D premium.",
+        help="Para Hedra funciona mejor una imagen frontal, nítida y con la cara bien visible.",
     )
     question_image = st.file_uploader(
         "Captura de pregunta",
@@ -172,12 +183,18 @@ with right:
     voice_name = st.selectbox(
         "Voz española",
         ["es-ES-AlvaroNeural", "es-ES-ElviraNeural"],
-        help="Usa el TTS integrado en MoneyPrinterTurbo.",
+        help="Esta misma voz se usa como audio conductor del avatar de Hedra.",
     )
     website = st.text_input("Web", value="h2doposiciones.es")
 
+    hedra_key = get_hedra_key()
+    if hedra_key:
+        st.success("Hedra API detectada. Ya puedes probar el tutor hablando.")
+    else:
+        st.warning("Falta HEDRA_API_KEY en Streamlit Secrets.")
+
     st.markdown(
-        '<div class="h2d-card"><b>V2 Premium</b><br>1080 × 1920 · 9:16 · MP4<br>5 escenas · branding H2D · tutor · pregunta · feedback · beneficios · CTA<br><br><b>Próximo salto</b><br>Lip-sync real + subtítulos dinámicos + transiciones avanzadas</div>',
+        '<div class="h2d-card"><b>Prueba V3 · Hedra</b><br>Genera solo el hook del tutor hablando para gastar pocos créditos y validar el resultado.<br><br><b>Después</b><br>Si nos gusta, ese clip se integra en el hook y CTA del Reel final.</div>',
         unsafe_allow_html=True,
     )
 
@@ -191,7 +208,44 @@ with right:
         st.caption("Vista previa — feedback")
         st.image(feedback_image, use_container_width=True)
 
-    generate = st.button("✨ Generar Reel H2D V2", type="primary")
+    hedra_test = st.button(
+        "🗣️ Probar tutor hablando · Hedra",
+        type="primary",
+        disabled=not bool(hedra_key and tutor_image and hook.strip()),
+    )
+    generate = st.button("✨ Generar Reel H2D V2")
+
+if hedra_test:
+    avatar_dir = Path(tempfile.gettempdir()) / "h2d_hedra" / uuid.uuid4().hex
+    avatar_dir.mkdir(parents=True, exist_ok=True)
+    tutor_path = save_upload(tutor_image, avatar_dir, "tutor")
+    avatar_output = str(avatar_dir / "H2D_Tutor_Hedra.mp4")
+    try:
+        with st.spinner("Hedra está animando al tutor. Puede tardar varios minutos…"):
+            generate_talking_avatar(
+                api_key=hedra_key,
+                image_path=tutor_path,
+                text=hook.strip(),
+                voice_name=voice_name,
+                output_path=avatar_output,
+                resolution="540p",
+                aspect_ratio="9:16",
+            )
+        st.session_state["h2d_hedra_test"] = Path(avatar_output).read_bytes()
+        st.success("Tutor hablado generado. Revísalo antes de gastar más créditos.")
+    except Exception as exc:
+        st.error(f"No se pudo generar el tutor con Hedra: {exc}")
+
+if st.session_state.get("h2d_hedra_test"):
+    st.subheader("4. Prueba del tutor hablando")
+    st.video(st.session_state["h2d_hedra_test"])
+    st.download_button(
+        "⬇️ Descargar prueba Hedra",
+        data=st.session_state["h2d_hedra_test"],
+        file_name="H2D_Tutor_Hedra.mp4",
+        mime="video/mp4",
+        use_container_width=True,
+    )
 
 if generate:
     missing = []
@@ -265,7 +319,7 @@ if generate:
             st.error(f"No se pudo generar el Reel: {exc}")
 
 if st.session_state.get("h2d_last_reel"):
-    st.subheader("4. Resultado")
+    st.subheader("5. Resultado Reel")
     st.video(st.session_state["h2d_last_reel"])
     st.download_button(
         "⬇️ Descargar Reel H2D V2",
