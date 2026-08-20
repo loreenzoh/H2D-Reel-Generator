@@ -16,7 +16,7 @@ from app.services.h2d_reel import render_reel
 
 
 st.set_page_config(
-    page_title="H2D Reel Generator",
+    page_title="H2D Reel Generator V2",
     page_icon="🎬",
     layout="wide",
 )
@@ -106,9 +106,9 @@ def save_upload(upload, folder: Path, prefix: str) -> str | None:
 st.markdown(
     """
     <div class="h2d-hero">
-      <div class="h2d-kicker">H2D STUDIO · REELS</div>
-      <div class="h2d-title">Generador de Reels H2D</div>
-      <p class="h2d-copy">Genera un primer MP4 9:16 con tutor, capturas reales de H2D y voz española.</p>
+      <div class="h2d-kicker">H2D STUDIO · REELS · V2</div>
+      <div class="h2d-title">Generador de Reels H2D Premium</div>
+      <p class="h2d-copy">Crea un anuncio 9:16 con escenas H2D, tutor, capturas reales, voz española, beneficios y CTA final.</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -144,7 +144,7 @@ with left:
         f"Imagen de {tutor}",
         type=["png", "jpg", "jpeg", "webp"],
         key=f"tutor_image_{tutor}",
-        help="En esta versión el tutor aparece como imagen. El lip-sync se conectará en la siguiente fase.",
+        help="La V2 integra al tutor como protagonista dentro de una composición H2D premium.",
     )
     question_image = st.file_uploader(
         "Captura de pregunta",
@@ -155,9 +155,10 @@ with left:
         "Captura de feedback",
         type=["png", "jpg", "jpeg", "webp"],
         key="feedback_image",
+        help="Si no subes feedback, la V2 reutilizará la captura de pregunta en esa escena.",
     )
     extra_images = st.file_uploader(
-        "Imágenes extra (opcional)",
+        "Imágenes extra para módulos/beneficios (opcional)",
         type=["png", "jpg", "jpeg", "webp"],
         accept_multiple_files=True,
         key="extra_images",
@@ -171,12 +172,12 @@ with right:
     voice_name = st.selectbox(
         "Voz española",
         ["es-ES-AlvaroNeural", "es-ES-ElviraNeural"],
-        help="Usa el TTS que ya incorpora MoneyPrinterTurbo.",
+        help="Usa el TTS integrado en MoneyPrinterTurbo.",
     )
     website = st.text_input("Web", value="h2doposiciones.es")
 
     st.markdown(
-        '<div class="h2d-card"><b>Salida actual</b><br>1080 × 1920 · 9:16 · MP4<br>Capturas exactas + voz española<br><br><b>Siguiente fase</b><br>Lip-sync del tutor + subtítulos H2D + transiciones premium</div>',
+        '<div class="h2d-card"><b>V2 Premium</b><br>1080 × 1920 · 9:16 · MP4<br>5 escenas · branding H2D · tutor · pregunta · feedback · beneficios · CTA<br><br><b>Próximo salto</b><br>Lip-sync real + subtítulos dinámicos + transiciones avanzadas</div>',
         unsafe_allow_html=True,
     )
 
@@ -190,7 +191,7 @@ with right:
         st.caption("Vista previa — feedback")
         st.image(feedback_image, use_container_width=True)
 
-    generate = st.button("🎬 Generar Reel MP4", type="primary")
+    generate = st.button("✨ Generar Reel H2D V2", type="primary")
 
 if generate:
     missing = []
@@ -241,21 +242,25 @@ if generate:
             for part in [hook, tutor_script, cta]
             if part and part.strip()
         )
-        output_path = str(job_dir / "h2d_reel.mp4")
+        output_path = str(job_dir / "h2d_reel_v2.mp4")
 
         try:
-            with st.spinner("Generando voz y renderizando el Reel…"):
+            with st.spinner("Generando voz y componiendo las 5 escenas H2D V2…"):
                 render_reel(
                     image_paths=image_paths,
                     spoken_text=spoken_text,
                     voice_name=voice_name,
                     requested_duration=duration,
                     output_path=output_path,
+                    hook=hook.strip(),
+                    cta=cta.strip(),
+                    website=website.strip(),
+                    module=module,
                 )
             reel_bytes = Path(output_path).read_bytes()
             st.session_state["h2d_last_reel"] = reel_bytes
             st.session_state["h2d_last_plan"] = asdict(plan)
-            st.success("Reel generado correctamente.")
+            st.success("Reel H2D V2 generado correctamente.")
         except Exception as exc:
             st.error(f"No se pudo generar el Reel: {exc}")
 
@@ -263,9 +268,9 @@ if st.session_state.get("h2d_last_reel"):
     st.subheader("4. Resultado")
     st.video(st.session_state["h2d_last_reel"])
     st.download_button(
-        "⬇️ Descargar Reel MP4",
+        "⬇️ Descargar Reel H2D V2",
         data=st.session_state["h2d_last_reel"],
-        file_name="H2D_Reel.mp4",
+        file_name="H2D_Reel_V2.mp4",
         mime="video/mp4",
         use_container_width=True,
     )
