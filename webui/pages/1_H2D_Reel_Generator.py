@@ -1,7 +1,18 @@
 import json
+import os
+import sys
+import tempfile
+import uuid
 from dataclasses import asdict, dataclass
+from pathlib import Path
 
 import streamlit as st
+
+ROOT_DIR = Path(__file__).resolve().parents[2]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from app.services.h2d_reel import render_reel
 
 
 st.set_page_config(
@@ -53,6 +64,7 @@ class ReelPlan:
     tutor_script: str
     cta: str
     website: str
+    tutor_image: bool
     question_image: bool
     feedback_image: bool
     extra_images: int
@@ -82,12 +94,21 @@ MODULES = {
 }
 
 
+def save_upload(upload, folder: Path, prefix: str) -> str | None:
+    if upload is None:
+        return None
+    suffix = Path(upload.name).suffix.lower() or ".png"
+    destination = folder / f"{prefix}{suffix}"
+    destination.write_bytes(upload.getbuffer())
+    return str(destination)
+
+
 st.markdown(
     """
     <div class="h2d-hero">
       <div class="h2d-kicker">H2D STUDIO · REELS</div>
       <div class="h2d-title">Generador de Reels H2D</div>
-      <p class="h2d-copy">Prepara un Reel 9:16 con tutor, capturas reales de H2D, voz, subtítulos y CTA.</p>
+      <p class="h2d-copy">Genera un primer MP4 9:16 con tutor, capturas reales de H2D y voz española.</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -100,10 +121,11 @@ with left:
     module = st.selectbox("Módulo", list(MODULES.keys()))
     defaults = MODULES[module]
 
+    tutor_names = ["PL tutor", "CGPC tutor", "SP tutor", "Inglés tutor"]
     tutor = st.selectbox(
         "Tutor",
-        ["PL tutor", "CGPC tutor", "SP tutor", "Inglés tutor"],
-        index=["PL tutor", "CGPC tutor", "SP tutor", "Inglés tutor"].index(defaults["tutor"]),
+        tutor_names,
+        index=tutor_names.index(defaults["tutor"]),
     )
 
     hook = st.text_input("Hook inicial", value=defaults["hook"])
@@ -112,9 +134,18 @@ with left:
         value=defaults["script"],
         height=110,
     )
-    cta = st.text_input("CTA final", value="Entrena como te van a examinar. Empieza hoy con H2D Oposiciones.")
+    cta = st.text_input(
+        "CTA final",
+        value="Entrena como te van a examinar. Empieza hoy con H2D Oposiciones.",
+    )
 
     st.subheader("2. Material visual")
+    tutor_image = st.file_uploader(
+        f"Imagen de {tutor}",
+        type=["png", "jpg", "jpeg", "webp"],
+        key=f"tutor_image_{tutor}",
+        help="En esta versión el tutor aparece como imagen. El lip-sync se conectará en la siguiente fase.",
+    )
     question_image = st.file_uploader(
         "Captura de pregunta",
         type=["png", "jpg", "jpeg", "webp"],
@@ -134,16 +165,24 @@ with left:
 
 with right:
     st.subheader("3. Formato")
-    duration = st.slider("Duración", min_value=10, max_value=30, value=15, step=1, format="%d s")
-    voice = st.selectbox(
+    duration = st.slider(
+        "Duración", min_value=10, max_value=30, value=15, step=1, format="%d s"
+    )
+    voice_name = st.selectbox(
         "Voz española",
         ["es-ES-AlvaroNeural", "es-ES-ElviraNeural"],
-        help="En la siguiente fase conectaremos esta selección al TTS ya incluido en MoneyPrinterTurbo.",
+        help="Usa el TTS que ya incorpora MoneyPrinterTurbo.",
     )
     website = st.text_input("Web", value="h2doposiciones.es")
 
-    st.markdown('<div class="h2d-card"><b>Salida prevista</b><br>1080 × 1920 · 9:16 · MP4<br>Voz en español · subtítulos · CTA H2D</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="h2d-card"><b>Salida actual</b><br>1080 × 1920 · 9:16 · MP4<br>Capturas exactas + voz española<br><br><b>Siguiente fase</b><br>Lip-sync del tutor + subtítulos H2D + transiciones premium</div>',
+        unsafe_allow_html=True,
+    )
 
+    if tutor_image:
+        st.caption(f"Vista previa — {tutor}")
+        st.image(tutor_image, use_container_width=True)
     if question_image:
         st.caption("Vista previa — pregunta")
         st.image(question_image, use_container_width=True)
@@ -151,10 +190,12 @@ with right:
         st.caption("Vista previa — feedback")
         st.image(feedback_image, use_container_width=True)
 
-    prepare = st.button("🎬 Preparar Reel", type="primary")
+    generate = st.button("🎬 Generar Reel MP4", type="primary")
 
-if prepare:
+if generate:
     missing = []
+    if not tutor_image:
+        missing.append("imagen del tutor")
     if not question_image:
         missing.append("captura de pregunta")
     if not tutor_script.strip():
@@ -167,18 +208,73 @@ if prepare:
             module=module,
             tutor=tutor,
             duration_seconds=duration,
-            voice=voice,
+            voice=voice_name,
             hook=hook.strip(),
             tutor_script=tutor_script.strip(),
             cta=cta.strip(),
             website=website.strip(),
+            tutor_image=tutor_image is not None,
             question_image=question_image is not None,
             feedback_image=feedback_image is not None,
             extra_images=len(extra_images or []),
         )
-        st.success("Plan del Reel preparado correctamente.")
-        st.info(
-            "Esta primera versión valida el flujo y la interfaz. En el siguiente paso conectaremos este botón al motor de MoneyPrinterTurbo para generar el MP4 real."
+
+        job_dir = Path(tempfile.gettempdir()) / "h2d_reels" / uuid.uuid4().hex
+        job_dir.mkdir(parents=True, exist_ok=True)
+
+        image_paths = []
+        for path in [
+            save_upload(tutor_image, job_dir, "00_tutor"),
+            save_upload(question_image, job_dir, "01_question"),
+            save_upload(feedback_image, job_dir, "02_feedback"),
+        ]:
+            if path:
+                image_paths.append(path)
+
+        for index, upload in enumerate(extra_images or [], start=3):
+            path = save_upload(upload, job_dir, f"{index:02d}_extra")
+            if path:
+                image_paths.append(path)
+
+        spoken_text = " ".join(
+            part.strip()
+            for part in [hook, tutor_script, cta]
+            if part and part.strip()
         )
-        with st.expander("Ver plan técnico"):
-            st.code(json.dumps(asdict(plan), ensure_ascii=False, indent=2), language="json")
+        output_path = str(job_dir / "h2d_reel.mp4")
+
+        try:
+            with st.spinner("Generando voz y renderizando el Reel…"):
+                render_reel(
+                    image_paths=image_paths,
+                    spoken_text=spoken_text,
+                    voice_name=voice_name,
+                    requested_duration=duration,
+                    output_path=output_path,
+                )
+            reel_bytes = Path(output_path).read_bytes()
+            st.session_state["h2d_last_reel"] = reel_bytes
+            st.session_state["h2d_last_plan"] = asdict(plan)
+            st.success("Reel generado correctamente.")
+        except Exception as exc:
+            st.error(f"No se pudo generar el Reel: {exc}")
+
+if st.session_state.get("h2d_last_reel"):
+    st.subheader("4. Resultado")
+    st.video(st.session_state["h2d_last_reel"])
+    st.download_button(
+        "⬇️ Descargar Reel MP4",
+        data=st.session_state["h2d_last_reel"],
+        file_name="H2D_Reel.mp4",
+        mime="video/mp4",
+        use_container_width=True,
+    )
+    with st.expander("Ver plan técnico"):
+        st.code(
+            json.dumps(
+                st.session_state.get("h2d_last_plan", {}),
+                ensure_ascii=False,
+                indent=2,
+            ),
+            language="json",
+        )
