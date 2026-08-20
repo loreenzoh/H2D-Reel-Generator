@@ -23,7 +23,7 @@ def _headers(api_key: str) -> dict[str, str]:
 def _raise_for_sync(response: requests.Response, context: str) -> None:
     if response.ok:
         return
-    detail = response.text[:1000]
+    detail = response.text[:1400]
     raise SyncError(f"{context} ({response.status_code}): {detail}")
 
 
@@ -43,55 +43,6 @@ def _generate_tts(text: str, voice_name: str, output_path: str) -> None:
         raise SyncError("No se pudo generar el audio para Sync Labs.")
 
 
-def _upload_asset(api_key: str, path: str, asset_type: str) -> str:
-    source = Path(path)
-    if not source.is_file():
-        raise SyncError(f"No existe el archivo {source.name}.")
-
-    content_type = mimetypes.guess_type(source.name)[0] or "application/octet-stream"
-    presign = requests.post(
-        f"{SYNC_BASE_URL}/assets/upload",
-        headers={**_headers(api_key), "Content-Type": "application/json"},
-        json={
-            "fileName": source.name,
-            "contentType": content_type,
-            "size": source.stat().st_size,
-        },
-        timeout=45,
-    )
-    _raise_for_sync(presign, f"Sync Labs no pudo preparar la subida de {source.name}")
-    upload_data = presign.json()
-    upload_url = upload_data.get("uploadUrl")
-    public_url = upload_data.get("url")
-    if not upload_url or not public_url:
-        raise SyncError(f"Sync Labs no devolvió URL de subida para {source.name}.")
-
-    with source.open("rb") as handle:
-        put = requests.put(
-            upload_url,
-            headers={"Content-Type": content_type},
-            data=handle,
-            timeout=180,
-        )
-    _raise_for_sync(put, f"No se pudo subir {source.name} a Sync Labs")
-
-    register = requests.post(
-        f"{SYNC_BASE_URL}/assets",
-        headers={**_headers(api_key), "Content-Type": "application/json"},
-        json={
-            "url": public_url,
-            "type": asset_type,
-            "name": source.name,
-        },
-        timeout=60,
-    )
-    _raise_for_sync(register, f"No se pudo registrar {source.name} en Sync Labs")
-    asset_id = register.json().get("id")
-    if not asset_id:
-        raise SyncError(f"Sync Labs no devolvió asset id para {source.name}.")
-    return asset_id
-
-
 def generate_talking_avatar(
     *,
     api_key: str,
@@ -103,37 +54,46 @@ def generate_talking_avatar(
 ) -> str:
     """Create a short talking tutor clip with Sync Labs sync-3.
 
-    Free accounts currently allow one sync-3 generation per month, up to 15 seconds.
-    We intentionally generate only the hook so the first quality test stays short.
+    Uses the documented multipart form of POST /v2/generate so local image/audio
+    files go directly to Sync Labs. This avoids the separate asset-upload flow and
+    is ideal for our short free-trial tests (files must remain under 20 MB each).
     """
-    if not api_key.strip():
+    key = api_key.strip()
+    if not key:
         raise SyncError("Falta SYNC_API_KEY.")
     if not text.strip():
         raise SyncError("El texto del tutor está vacío.")
-    if not os.path.isfile(image_path):
+
+    image = Path(image_path)
+    if not image.is_file():
         raise SyncError("No se encontró la imagen del tutor.")
+    if image.stat().st_size >= 20 * 1024 * 1024:
+        raise SyncError("La imagen supera 20 MB. Usa una imagen más ligera para la prueba de Sync Labs.")
 
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
-    audio_path = str(output.with_suffix(".sync_voice.mp3"))
-    _generate_tts(text.strip(), voice_name, audio_path)
+    audio_path = output.with_suffix(".sync_voice.mp3")
+    _generate_tts(text.strip(), voice_name, str(audio_path))
+    if audio_path.stat().st_size >= 20 * 1024 * 1024:
+        raise SyncError("El audio supera 20 MB; acorta el hook.")
 
-    image_asset_id = _upload_asset(api_key, image_path, "IMAGE")
-    audio_asset_id = _upload_asset(api_key, audio_path, "AUDIO")
+    image_type = mimetypes.guess_type(image.name)[0] or "image/png"
+    audio_type = mimetypes.guess_type(audio_path.name)[0] or "audio/mpeg"
 
-    payload = {
-        "model": "sync-3",
-        "input": [
-            {"type": "image", "assetId": image_asset_id},
-            {"type": "audio", "assetId": audio_asset_id},
-        ],
-    }
-    create = requests.post(
-        f"{SYNC_BASE_URL}/generate",
-        headers={**_headers(api_key), "Content-Type": "application/json"},
-        json=payload,
-        timeout=60,
-    )
+    # Sync Labs documents direct local-file upload on the same generation endpoint:
+    # multipart fields named image/audio plus the model field.
+    with image.open("rb") as image_handle, audio_path.open("rb") as audio_handle:
+        create = requests.post(
+            f"{SYNC_BASE_URL}/generate",
+            headers=_headers(key),
+            data={"model": "sync-3"},
+            files={
+                "image": (image.name, image_handle, image_type),
+                "audio": (audio_path.name, audio_handle, audio_type),
+            },
+            timeout=180,
+        )
+
     _raise_for_sync(create, "Sync Labs no pudo iniciar el tutor")
     generation = create.json()
     generation_id = generation.get("id")
@@ -141,16 +101,18 @@ def generate_talking_avatar(
         raise SyncError(f"Sync Labs no devolvió generation id: {generation}")
 
     deadline = time.time() + timeout_seconds
-    last_status = generation.get("status", "PENDING")
+    last_status = str(generation.get("status", "PENDING")).upper()
+
     while time.time() < deadline:
         status_response = requests.get(
             f"{SYNC_BASE_URL}/generate/{generation_id}",
-            headers=_headers(api_key),
-            timeout=45,
+            headers=_headers(key),
+            params={"wait": "true"},
+            timeout=75,
         )
         _raise_for_sync(status_response, "No se pudo consultar el estado de Sync Labs")
         status_data = status_response.json()
-        last_status = status_data.get("status", "PROCESSING")
+        last_status = str(status_data.get("status", "PROCESSING")).upper()
 
         if last_status == "COMPLETED":
             video_url = status_data.get("outputUrl")
@@ -159,14 +121,14 @@ def generate_talking_avatar(
             download = requests.get(video_url, timeout=180)
             _raise_for_sync(download, "No se pudo descargar el vídeo de Sync Labs")
             output.write_bytes(download.content)
-            if output.stat().st_size <= 0:
+            if not output.is_file() or output.stat().st_size <= 0:
                 raise SyncError("Sync Labs devolvió un vídeo vacío.")
             return str(output)
 
         if last_status in {"FAILED", "REJECTED"}:
-            error = status_data.get("error") or status_data.get("errorCode") or "Error desconocido"
+            error = status_data.get("error") or status_data.get("errorCode") or status_data
             raise SyncError(f"Sync Labs devolvió {last_status}: {error}")
 
-        time.sleep(5)
+        time.sleep(3)
 
     raise SyncError(f"Sync Labs sigue en estado '{last_status}' después de {timeout_seconds} s.")
