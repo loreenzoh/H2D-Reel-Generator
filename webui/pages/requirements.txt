@@ -2,3 +2,4 @@ streamlit==1.59.1
 moviepy==2.2.1
 Pillow>=10.4,<12
 edge-tts==7.2.7
+fal-client>=0.7.0
