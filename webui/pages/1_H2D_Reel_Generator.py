@@ -12,7 +12,8 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from app.services.h2d_hedra import generate_talking_avatar
+from app.services.h2d_hedra import generate_talking_avatar as generate_hedra_avatar
+from app.services.h2d_sync import generate_talking_avatar as generate_sync_avatar
 from app.services.h2d_reel import render_reel
 
 
@@ -104,14 +105,22 @@ def save_upload(upload, folder: Path, prefix: str) -> str | None:
     return str(destination)
 
 
-def get_hedra_key() -> str:
-    key = os.getenv("HEDRA_API_KEY", "").strip()
+def _secret(name: str) -> str:
+    key = os.getenv(name, "").strip()
     if key:
         return key
     try:
-        return str(st.secrets.get("HEDRA_API_KEY", "")).strip()
+        return str(st.secrets.get(name, "")).strip()
     except Exception:
         return ""
+
+
+def get_hedra_key() -> str:
+    return _secret("HEDRA_API_KEY")
+
+
+def get_sync_key() -> str:
+    return _secret("SYNC_API_KEY")
 
 
 st.markdown(
@@ -119,7 +128,7 @@ st.markdown(
     <div class="h2d-hero">
       <div class="h2d-kicker">H2D STUDIO · REELS · V3</div>
       <div class="h2d-title">Generador de Reels H2D Premium</div>
-      <p class="h2d-copy">Monta el Reel H2D y prueba el tutor hablando con Hedra antes de integrarlo en el anuncio final.</p>
+      <p class="h2d-copy">Prueba gratis el tutor hablando con Sync Labs y conserva Hedra como alternativa de pago.</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -155,7 +164,7 @@ with left:
         f"Imagen de {tutor}",
         type=["png", "jpg", "jpeg", "webp"],
         key=f"tutor_image_{tutor}",
-        help="Para Hedra funciona mejor una imagen frontal, nítida y con la cara bien visible.",
+        help="Para el avatar funciona mejor una imagen frontal, nítida y con la cara bien visible.",
     )
     question_image = st.file_uploader(
         "Captura de pregunta",
@@ -183,18 +192,23 @@ with right:
     voice_name = st.selectbox(
         "Voz española",
         ["es-ES-AlvaroNeural", "es-ES-ElviraNeural"],
-        help="Esta misma voz se usa como audio conductor del avatar de Hedra.",
+        help="La misma voz se usa como audio conductor del avatar.",
     )
     website = st.text_input("Web", value="h2doposiciones.es")
 
+    sync_key = get_sync_key()
     hedra_key = get_hedra_key()
-    if hedra_key:
-        st.success("Hedra API detectada. Ya puedes probar el tutor hablando.")
+
+    if sync_key:
+        st.success("Sync Labs API detectada · prueba gratuita disponible según tu cuenta.")
     else:
-        st.warning("Falta HEDRA_API_KEY en Streamlit Secrets.")
+        st.info("Para probar gratis el tutor: añade SYNC_API_KEY en Streamlit Secrets.")
+
+    if hedra_key:
+        st.caption("Hedra también está configurada, pero tu wallet API actual necesita saldo.")
 
     st.markdown(
-        '<div class="h2d-card"><b>Prueba V3 · Hedra</b><br>Genera solo el hook del tutor hablando para gastar pocos créditos y validar el resultado.<br><br><b>Después</b><br>Si nos gusta, ese clip se integra en el hook y CTA del Reel final.</div>',
+        '<div class="h2d-card"><b>Prueba V3 · recomendada</b><br>Sync Labs permite en cuentas gratuitas 1 prueba de sync-3 al mes de hasta 15 s y funciona por API sin tarjeta.<br><br><b>Consejo</b><br>Usa un hook de 3–5 s para no desperdiciar la prueba.</div>',
         unsafe_allow_html=True,
     )
 
@@ -208,12 +222,46 @@ with right:
         st.caption("Vista previa — feedback")
         st.image(feedback_image, use_container_width=True)
 
+    sync_test = st.button(
+        "🆓 Probar tutor hablando · Sync Labs",
+        type="primary",
+        disabled=not bool(sync_key and tutor_image and hook.strip()),
+    )
     hedra_test = st.button(
         "🗣️ Probar tutor hablando · Hedra",
-        type="primary",
         disabled=not bool(hedra_key and tutor_image and hook.strip()),
     )
     generate = st.button("✨ Generar Reel H2D V2")
+
+if sync_test:
+    avatar_dir = Path(tempfile.gettempdir()) / "h2d_sync" / uuid.uuid4().hex
+    avatar_dir.mkdir(parents=True, exist_ok=True)
+    tutor_path = save_upload(tutor_image, avatar_dir, "tutor")
+    avatar_output = str(avatar_dir / "H2D_Tutor_Sync.mp4")
+    try:
+        with st.spinner("Sync Labs está animando al tutor. Puede tardar varios minutos…"):
+            generate_sync_avatar(
+                api_key=sync_key,
+                image_path=tutor_path,
+                text=hook.strip(),
+                voice_name=voice_name,
+                output_path=avatar_output,
+            )
+        st.session_state["h2d_sync_test"] = Path(avatar_output).read_bytes()
+        st.success("Tutor hablado generado con Sync Labs. Revísalo antes de integrar el avatar en el Reel.")
+    except Exception as exc:
+        st.error(f"No se pudo generar el tutor con Sync Labs: {exc}")
+
+if st.session_state.get("h2d_sync_test"):
+    st.subheader("4. Prueba gratuita del tutor hablando")
+    st.video(st.session_state["h2d_sync_test"])
+    st.download_button(
+        "⬇️ Descargar prueba Sync Labs",
+        data=st.session_state["h2d_sync_test"],
+        file_name="H2D_Tutor_Sync.mp4",
+        mime="video/mp4",
+        use_container_width=True,
+    )
 
 if hedra_test:
     avatar_dir = Path(tempfile.gettempdir()) / "h2d_hedra" / uuid.uuid4().hex
@@ -222,7 +270,7 @@ if hedra_test:
     avatar_output = str(avatar_dir / "H2D_Tutor_Hedra.mp4")
     try:
         with st.spinner("Hedra está animando al tutor. Puede tardar varios minutos…"):
-            generate_talking_avatar(
+            generate_hedra_avatar(
                 api_key=hedra_key,
                 image_path=tutor_path,
                 text=hook.strip(),
@@ -232,12 +280,12 @@ if hedra_test:
                 aspect_ratio="9:16",
             )
         st.session_state["h2d_hedra_test"] = Path(avatar_output).read_bytes()
-        st.success("Tutor hablado generado. Revísalo antes de gastar más créditos.")
+        st.success("Tutor hablado generado con Hedra.")
     except Exception as exc:
         st.error(f"No se pudo generar el tutor con Hedra: {exc}")
 
 if st.session_state.get("h2d_hedra_test"):
-    st.subheader("4. Prueba del tutor hablando")
+    st.subheader("Prueba Hedra")
     st.video(st.session_state["h2d_hedra_test"])
     st.download_button(
         "⬇️ Descargar prueba Hedra",
