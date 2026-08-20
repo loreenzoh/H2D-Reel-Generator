@@ -1,14 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import tempfile
 from pathlib import Path
 from typing import Iterable
 
+import edge_tts
 from moviepy import AudioFileClip, ImageClip, concatenate_videoclips
 from PIL import Image, ImageFilter, ImageOps
-
-from app.services import voice
 
 
 FRAME_SIZE = (1080, 1920)
@@ -23,7 +23,6 @@ def _prepare_vertical_frame(source: str, destination: str) -> str:
     background = ImageOps.fit(image, FRAME_SIZE, method=Image.Resampling.LANCZOS)
     background = background.filter(ImageFilter.GaussianBlur(radius=26))
 
-    # Darken the blurred background so screenshots and tutors stay readable.
     dark = Image.new("RGB", FRAME_SIZE, (5, 16, 27))
     background = Image.blend(background, dark, 0.42)
 
@@ -39,6 +38,23 @@ def _prepare_vertical_frame(source: str, destination: str) -> str:
     return destination
 
 
+async def _save_edge_tts(text: str, voice_name: str, output_path: str) -> None:
+    communicate = edge_tts.Communicate(
+        text=text,
+        voice=voice_name,
+        rate="+0%",
+        volume="+0%",
+    )
+    await communicate.save(output_path)
+
+
+def _generate_voice(text: str, voice_name: str, output_path: str) -> None:
+    """Generate Spanish narration without importing the full MPT voice stack."""
+    asyncio.run(_save_edge_tts(text, voice_name, output_path))
+    if not os.path.isfile(output_path) or os.path.getsize(output_path) <= 0:
+        raise RuntimeError("No se pudo generar la voz del Reel.")
+
+
 def render_reel(
     *,
     image_paths: Iterable[str],
@@ -47,12 +63,7 @@ def render_reel(
     requested_duration: int,
     output_path: str,
 ) -> str:
-    """Render a first H2D 9:16 MP4 using uploaded assets and MoneyPrinterTurbo TTS.
-
-    This MVP deliberately uses deterministic image composition instead of generative
-    video. It makes the H2D screenshots remain exact and gives us a reliable base to
-    plug an avatar/lip-sync provider into later.
-    """
+    """Render a first H2D 9:16 MP4 using exact uploaded assets and Spanish TTS."""
     sources = [str(Path(path)) for path in image_paths if path]
     if not sources:
         raise ValueError("At least one image is required to render the reel.")
@@ -63,15 +74,7 @@ def render_reel(
 
     with tempfile.TemporaryDirectory(prefix="h2d_reel_") as workdir:
         audio_path = os.path.join(workdir, "voice.mp3")
-        sub_maker = voice.tts(
-            text=spoken_text.strip(),
-            voice_name=voice_name,
-            voice_rate=1.0,
-            voice_file=audio_path,
-            voice_volume=1.0,
-        )
-        if sub_maker is None or not os.path.isfile(audio_path):
-            raise RuntimeError("No se pudo generar la voz del Reel.")
+        _generate_voice(spoken_text.strip(), voice_name, audio_path)
 
         prepared = []
         for index, source in enumerate(sources):
@@ -82,12 +85,8 @@ def render_reel(
         target_duration = max(float(requested_duration), float(audio.duration) + 0.15)
         clip_duration = target_duration / len(prepared)
 
-        clips = [
-            ImageClip(frame).with_duration(clip_duration)
-            for frame in prepared
-        ]
-        video = concatenate_videoclips(clips, method="compose")
-        video = video.with_audio(audio)
+        clips = [ImageClip(frame).with_duration(clip_duration) for frame in prepared]
+        video = concatenate_videoclips(clips, method="compose").with_audio(audio)
 
         try:
             video.write_videofile(
