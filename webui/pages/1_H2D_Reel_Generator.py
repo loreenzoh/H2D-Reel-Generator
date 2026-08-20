@@ -1,4 +1,3 @@
-import importlib
 import json
 import os
 import sys
@@ -13,13 +12,7 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from app.services import h2d_reel
-
-# Streamlit puede conservar módulos importados en memoria durante un hot deploy.
-# Recargamos explícitamente el renderer para que la WebUI y el servicio usen siempre
-# la misma versión después de actualizar la rama.
-importlib.reload(h2d_reel)
-render_reel = h2d_reel.render_reel
+from app.services.h2d_reel import render_reel
 
 
 st.set_page_config(
